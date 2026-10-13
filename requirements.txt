@@ -1,0 +1,4 @@
+opencv-python
+yt-dlp
+pandas
+numpy

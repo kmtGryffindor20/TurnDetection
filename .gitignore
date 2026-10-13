@@ -1,0 +1,4 @@
+*.xlsx
+venv/
+dataset_*/
+__pycache__/
