@@ -32,7 +32,7 @@ class DatasetWriter:
         for class_name in config.CLASSES:
             os.makedirs(os.path.join(config.DATASET_DIR, class_name), exist_ok=True)
 
-    def submit_clip(self, frames, accumulated_dx: float, speed=None):
+    def submit_clip(self, frames, accumulated_dx: float):
         """
         Classifies the deflection and, if it clears the discard threshold,
         hands the frame sequence off to a background thread for encoding.
@@ -48,12 +48,12 @@ class DatasetWriter:
             turn_id = self._turn_count
 
         future = self.executor.submit(
-            self._encode_clip, turn_id, turn_type, list(frames), accumulated_dx, speed
+            self._encode_clip, turn_id, turn_type, list(frames), accumulated_dx
         )
         self._futures.append(future)
         return turn_id
 
-    def _encode_clip(self, turn_id, turn_type, frames, accumulated_dx, speed=None):
+    def _encode_clip(self, turn_id, turn_type, frames, accumulated_dx):
         clip_filename = f"turn_{turn_id:04d}.mp4"
         class_folder = os.path.join(config.DATASET_DIR, turn_type)
         clip_path = os.path.abspath(os.path.join(class_folder, clip_filename))
@@ -69,17 +69,15 @@ class DatasetWriter:
         record = {
             "Turn ID": turn_id,
             "Class": turn_type,
-            "Speed (km/h)": speed,
             "Deflection Value": round(accumulated_dx, 2),
             "Saved Clip Address": clip_path,
         }
         with self._lock:
             self._records.append(record)
 
-        speed_str = f"{speed} km/h" if speed is not None else "n/a"
         print(
             f"Saved 20s Clip #{turn_id} ---> Class: '{turn_type}' "
-            f"(Speed: {speed_str} | Deflection: {accumulated_dx:.2f}) | Path: {clip_path}"
+            f"(Deflection: {accumulated_dx:.2f}) | Path: {clip_path}"
         )
         return record
 

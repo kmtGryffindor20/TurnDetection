@@ -4,7 +4,7 @@ import cv2
 import config
 
 
-def draw_visual_telemetry(frame, dx, dy, is_turning, ocr_bbox=None, ocr_text=None):
+def draw_visual_telemetry(frame, dx, dy, is_turning):
     """Draws a motion-vector arrow and status/telemetry HUD onto a copy of frame."""
     display = frame.copy()
     h, w = display.shape[:2]
@@ -27,18 +27,6 @@ def draw_visual_telemetry(frame, dx, dy, is_turning, ocr_bbox=None, ocr_text=Non
     cv2.putText(display, f"Horiz Vector (dx): {dx:.2f}", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     cv2.putText(display, f"Vert Vector (dy):   {dy:.2f}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
-    # Bounding box of the last detected speed text (green), drawn whenever the
-    # OCR gate found a numeric token.
-    if ocr_bbox is not None:
-        x0, y0, x1, y1 = [int(v) for v in ocr_bbox]
-        cv2.rectangle(display, (x0, y0), (x1, y1), (0, 255, 0), 2)
-        if ocr_text:
-            label_y = y0 - 6 if y0 - 6 > 12 else y1 + 18
-            cv2.putText(
-                display, f"SPEED {ocr_text}", (x0, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2,
-            )
-
     return display
 
 
@@ -58,11 +46,11 @@ class PreviewWindow:
             cv2.namedWindow(self.name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(self.name, config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT)
 
-    def show(self, frame, dx, dy, is_turning, ocr_bbox=None, ocr_text=None) -> bool:
+    def show(self, frame, dx, dy, is_turning) -> bool:
         """Renders one frame. Returns False if the user pressed 'q' to stop."""
         if not self.enabled:
             return True
-        render = draw_visual_telemetry(frame, dx, dy, is_turning, ocr_bbox, ocr_text)
+        render = draw_visual_telemetry(frame, dx, dy, is_turning)
         render = cv2.resize(render, (config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT))
         cv2.imshow(self.name, render)
         if cv2.waitKey(1) & 0xFF == ord("q"):

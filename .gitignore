@@ -1,6 +1,4 @@
 *.xlsx
 venv/
-vendor/
 dataset_*/
 __pycache__/
-*.mp4
