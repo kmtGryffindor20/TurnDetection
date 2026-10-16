@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 
 import config
-from visualizer_v2 import draw_flow
 
 
 class TurnDetector:

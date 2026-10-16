@@ -1,7 +1,7 @@
 """Central configuration for the turn-detection dataset pipeline."""
 
 # Input source: local file path OR YouTube URL
-INPUT_SOURCE = "https://youtu.be/TAqA_mPHsyE?si=yWSRGwKlShLUTV2j"
+INPUT_SOURCE = "./data_1.mp4"
 
 # Output locations
 DATASET_DIR = "dataset_turns_3class"
