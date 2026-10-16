@@ -22,9 +22,13 @@ class TurnDetector:
     filter.
     """
 
-    def __init__(self, first_frame):
+    def __init__(self, first_frame, completion_validator=None):
         self.prev_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
         self.dx_history = deque(maxlen=config.SMOOTHING_WINDOW)
+        # Optional callback run when a turn completes: it decides whether the
+        # turn is kept (e.g. a speedometer reading was found). Returning False
+        # makes `update` report the turn as "rejected" instead of "completed".
+        self.completion_validator = completion_validator
 
         self.is_turning = False
         self.turn_step_counter = 0
@@ -55,9 +59,10 @@ class TurnDetector:
           "cut"       - camera-cut noise suppressed, state reset
           "ongoing"   - mid-turn, still accumulating
           "completed" - a turn just ended; deflection is the accumulated dx
+          "rejected"  - a turn ended but the completion_validator rejected it
           "idle"      - no turn active
 
-        `deflection` is meaningful only for "completed".
+        `deflection` is meaningful only for "completed"/"rejected".
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         raw_dx, raw_dy, flow = self._compute_flow(gray)
@@ -105,6 +110,10 @@ class TurnDetector:
             completed_dx = self.accumulated_dx
             self.turn_step_counter = 0
             if completed_duration >= config.MIN_TURN_DURATION:
+                if self.completion_validator is not None and not self.completion_validator(
+                    frame
+                ):
+                    return "rejected", completed_dx
                 return "completed", completed_dx
 
         return "idle", 0.0
