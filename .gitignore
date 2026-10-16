@@ -2,3 +2,4 @@
 venv/
 dataset_*/
 __pycache__/
+*.mp4
