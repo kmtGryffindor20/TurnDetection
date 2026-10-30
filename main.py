@@ -90,7 +90,11 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
     hud_bbox = None
 
     frame_idx = 0
-    print("Analyzing video stream... Press 'q' inside the preview window to stop early.")
+    # A turn "detected" is any completed flow manoeuvre; it is only saved as a
+    # clip if it clears the speed gate and the classification discard threshold.
+    turns_detected = 0
+    if config.VERBOSE:
+        print("Analyzing video stream... Press 'q' inside the preview window to stop early.")
 
     try:
         while True:
@@ -119,14 +123,16 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
                 if event == "ongoing" and detector.turn_step_counter == 1:
                     turn_speeds = []  # a new turn just started
                 elif event == "completed":
+                    turns_detected += 1
                     average_speed = (
                         sum(turn_speeds) / len(turn_speeds) if turn_speeds else None
                     )
                     if average_speed is None:
-                        print(
-                            "Turn rejected: no speed within the limit was "
-                            "detected during the turn."
-                        )
+                        if config.VERBOSE:
+                            print(
+                                "Turn rejected: no speed within the limit was "
+                                "detected during the turn."
+                            )
                     else:
                         pending_pre_snapshot = list(pre_frame_buffer)
                         post_roll_accum_dx = deflection
@@ -152,7 +158,8 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
                 frame, detector.current_dx, detector.current_dy, is_turning_now,
                 hud_speed, hud_bbox,
             ):
-                print("Execution manually stopped by user.")
+                if config.VERBOSE:
+                    print("Execution manually stopped by user.")
                 break
     finally:
         reader.stop()
@@ -160,6 +167,13 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
         writer.wait_for_completion()
         writer.flush_excel()
         writer.shutdown()
+
+    # Consumed by the batch runner for its running/summary counters.
+    return {
+        "frames": frame_idx,
+        "turns_detected": turns_detected,
+        "clips_saved": writer.clip_count,
+    }
 
 
 if __name__ == "__main__":

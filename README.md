@@ -75,8 +75,9 @@ nohup python pipeline.py ./videos --output ./batch_output --no-preview \
 
 Process a directory of group folders (each holding one or more videos) in one
 go. `pipeline.py` points `config` at each video, runs `main.py`'s pipeline
-sequentially, and shows two tqdm bars: `Videos: n/N` for the batch and a
-per-video frame bar (percentage/ETA) for the video being processed:
+sequentially, and shows two tqdm bars: `Videos: n/N` for the batch (plus
+running turns-detected/clips-saved totals) and a per-video frame bar
+(percentage/ETA) for the video being processed:
 
 ```bash
 python pipeline.py ./videos --output ./batch_output --no-preview
@@ -96,9 +97,15 @@ videos/                          batch_output/
 
 Each video gets its own dataset folder and catalog, so turn IDs and clip names
 never collide. The combined catalog adds `Group`, `Source Video`, and
-`Video` columns. Useful flags: `--skip-existing` (resume a batch),
-`--dry-run` (list discovered videos and output folders), `--no-preview`
-(headless). The process exits non-zero if any video fails.
+`Video` columns. The batch summary reports **turns detected** (completed flow
+manoeuvres, before the speed/deflection gates) separately from **clips saved**.
+
+Useful flags: `--skip-existing` (resume a batch), `--dry-run` (list discovered
+videos and output folders), `--no-preview` (headless), and `-q/--quiet`
+(silence per-turn/per-clip internal logs such as "Turn rejected: no speed…"
+and "Saved 20s Clip #…"; the bars and per-video result lines stay). Quiet mode
+can also be set globally with `VERBOSE = False` in `config.py`. The process
+exits non-zero if any video fails.
 
 Farneback is used by default. Set `USE_LK_OPTICAL_FLOW = True` to use sparse
 Lucas-Kanade tracking of feature points inside the configured ROI. LK tuning

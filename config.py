@@ -13,6 +13,9 @@ SHOW_PREVIEW = True  # Set False on a headless server
 DISPLAY_WIDTH = 960
 DISPLAY_HEIGHT = 540
 
+# Logging: False silences per-turn/per-clip internal logs (pipeline --quiet)
+VERBOSE = True
+
 # Optical flow sampling
 FRAME_STEP = 3  # Compute flow every 3 frames (~0.1s step)
 

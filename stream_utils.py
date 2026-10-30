@@ -29,7 +29,8 @@ def resolve_video_source(source: str) -> str:
             raise FileNotFoundError(f"Local video file '{source}' does not exist.")
         return source
 
-    print(f"Resolving YouTube video stream URL from: {source} ...")
+    if config.VERBOSE:
+        print(f"Resolving YouTube video stream URL from: {source} ...")
     import yt_dlp
 
     ydl_opts = {

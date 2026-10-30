@@ -65,6 +65,7 @@ For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = Fal
 | `SPEED_LIMIT_KMH` | 200.0 | Readings above this are rejected as noise |
 | `SPEED_SAMPLE_STEP` | 6 | Recognise the readout every N frames |
 | `SPEED_ROI_Y` / `SPEED_ROI_X` | (0.60, 1.00) / (0.25, 0.75) | Speedometer ROI (fraction of frame) |
+| `VERBOSE` | True | Per-turn/per-clip internal logs; `pipeline.py --quiet` forces False |
 
 
 ## Output Structure

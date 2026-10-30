@@ -81,12 +81,19 @@ class DatasetWriter:
             self._records.append(record)
 
         speed_text = f"{average_speed:.1f} km/h" if average_speed is not None else "n/a"
-        print(
-            f"Saved 20s Clip #{turn_id} ---> Class: '{turn_type}' "
-            f"(Deflection: {accumulated_dx:.2f}, Avg Speed: {speed_text}) "
-            f"| Path: {clip_path}"
-        )
+        if config.VERBOSE:
+            print(
+                f"Saved 20s Clip #{turn_id} ---> Class: '{turn_type}' "
+                f"(Deflection: {accumulated_dx:.2f}, Avg Speed: {speed_text}) "
+                f"| Path: {clip_path}"
+            )
         return record
+
+    @property
+    def clip_count(self) -> int:
+        """Number of clips encoded so far (accurate once writers have finished)."""
+        with self._lock:
+            return len(self._records)
 
     def wait_for_completion(self):
         """Blocks until every queued clip has finished encoding."""
@@ -97,12 +104,14 @@ class DatasetWriter:
         with self._lock:
             records = list(self._records)
         if not records:
-            print("\nProcessing complete! No distinct road turns were detected.")
+            if config.VERBOSE:
+                print("\nProcessing complete! No distinct road turns were detected.")
             return
         records.sort(key=lambda r: r["Turn ID"])
         df = pd.DataFrame(records)
         df.to_excel(config.EXCEL_FILE, index=False)
-        print(f"\nProcessing complete! Dataset catalog saved to '{config.EXCEL_FILE}'.")
+        if config.VERBOSE:
+            print(f"\nProcessing complete! Dataset catalog saved to '{config.EXCEL_FILE}'.")
 
     def shutdown(self):
         self.executor.shutdown(wait=True)

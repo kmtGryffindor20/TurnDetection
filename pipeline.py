@@ -2,16 +2,18 @@
 
 Walks a directory of group folders, points :mod:`config` at each video in
 turn, and runs :func:`main.process_video_pipeline` sequentially. Progress is
-shown with two tqdm bars: an outer ``Videos: n/N`` counter and an inner
-per-video frame bar (percentage/ETA) driven by the pipeline's
-``progress_callback``. Each video gets its own dataset folder and Excel
-catalog so clip names and turn IDs never collide between runs; a combined
-catalog for the whole batch is written at the end.
+shown with two tqdm bars: an outer ``Videos: n/N`` counter (with running
+turns/clips totals) and an inner per-video frame bar (percentage/ETA) driven
+by the pipeline's ``progress_callback``. ``--quiet`` silences the
+per-turn/per-clip internal logs (same as ``config.VERBOSE = False``) while
+keeping the bars and per-video result lines. Each video gets its own dataset
+folder and Excel catalog so clip names and turn IDs never collide between
+runs; a combined catalog for the whole batch is written at the end.
 
 Usage
 -----
     python pipeline.py <root_dir> [--output <dir>] [--no-preview]
-                       [--skip-existing] [--dry-run]
+                       [--skip-existing] [--dry-run] [--quiet]
 
 Expected input layout (each immediate sub-directory is one group)
 ------------------------------------------------------------------
@@ -40,6 +42,7 @@ Notes
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import traceback
 from dataclasses import dataclass
@@ -58,7 +61,13 @@ CATALOG_NAME = "road_turn_dataset.xlsx"
 DATASET_NAME = "dataset_turns_3class"
 
 # Config values the batch runner overrides per video and restores afterwards.
-OVERRIDDEN_CONFIG = ("INPUT_SOURCE", "DATASET_DIR", "EXCEL_FILE", "SHOW_PREVIEW")
+OVERRIDDEN_CONFIG = (
+    "INPUT_SOURCE",
+    "DATASET_DIR",
+    "EXCEL_FILE",
+    "SHOW_PREVIEW",
+    "VERBOSE",
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +99,7 @@ class JobResult:
     status: str  # ok | no-turns | unreadable | missing | skipped | error
     records: pd.DataFrame | None = None
     error: str | None = None
+    turns_detected: int = 0
 
     @property
     def clip_count(self) -> int:
@@ -180,22 +190,31 @@ def run_video(
     try:
         job.output_dir.mkdir(parents=True, exist_ok=True)
         apply_config(job, show_preview)
-        turn_pipeline.process_video_pipeline(
-            str(job.path), speed_recognizer, on_progress
+        summary = (
+            turn_pipeline.process_video_pipeline(
+                str(job.path), speed_recognizer, on_progress
+            )
+            or {}
         )
+        turns_detected = int(summary.get("turns_detected") or 0)
 
         if job.catalog_path.is_file():
             records = pd.read_excel(job.catalog_path)
-            _mark_done(job, "ok")
+            if not turns_detected:
+                turns_detected = len(records)
+            _mark_done(job, "ok", turns_detected, len(records))
             return JobResult(
-                job, "ok" if len(records) else "no-turns", records=records
+                job,
+                "ok" if len(records) else "no-turns",
+                records=records,
+                turns_detected=turns_detected,
             )
 
         # No catalog is written when no turn survived the speed/deflection gates.
         # A missing dataset folder as well means the stream could not even be read.
         status = "no-turns" if Path(config.DATASET_DIR).is_dir() else "unreadable"
-        _mark_done(job, status)
-        return JobResult(job, status)
+        _mark_done(job, status, turns_detected, 0)
+        return JobResult(job, status, turns_detected=turns_detected)
     except Exception:  # keep the batch going even if one video blows up
         return JobResult(job, "error", error=traceback.format_exc())
     finally:
@@ -203,12 +222,28 @@ def run_video(
             frame_bar.close()
 
 
-def _mark_done(job: VideoJob, status: str) -> None:
-    """Records a completed run so `--skip-existing` can resume the batch."""
+def _mark_done(
+    job: VideoJob, status: str, turns_detected: int = 0, clips_saved: int = 0
+) -> None:
+    """Records a completed run (with its turn counters) for `--skip-existing`."""
+    payload = {
+        "status": status,
+        "turns_detected": turns_detected,
+        "clips_saved": clips_saved,
+    }
     try:
-        job.done_marker.write_text(f"{status}\n", encoding="utf-8")
+        job.done_marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     except OSError:
         pass
+
+
+def _read_done_marker(job: VideoJob) -> dict:
+    """Reads a job's `.done` marker, tolerating older plain-text markers."""
+    try:
+        data = json.loads(job.done_marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def combine_catalogs(results: list[JobResult], output_dir: Path) -> pd.DataFrame | None:
@@ -245,15 +280,29 @@ def report_result(result: JobResult) -> None:
             breakdown = " (" + ", ".join(
                 f"{name}={count}" for name, count in classes.items()
             ) + ")"
-        tqdm.write(f"[ok] {job.label}: {result.clip_count} clip(s){breakdown}")
+        tqdm.write(
+            f"[ok] {job.label}: {result.turns_detected} turn(s) detected, "
+            f"{result.clip_count} clip(s){breakdown}"
+        )
     elif result.status == "no-turns":
-        tqdm.write(f"[no turns] {job.label}")
+        if result.turns_detected:
+            tqdm.write(
+                f"[no clips] {job.label}: {result.turns_detected} turn(s) "
+                "detected but none saved (speed gate / deflection discard)"
+            )
+        else:
+            tqdm.write(f"[no turns] {job.label}")
     elif result.status == "unreadable":
         tqdm.write(f"[unreadable] {job.label}: stream could not be opened")
     elif result.status == "missing":
         tqdm.write(f"[missing] {job.label}: file not found")
     elif result.status == "skipped":
-        tqdm.write(f"[skipped] {job.label}: already processed")
+        suffix = (
+            f" ({result.turns_detected} turn(s) detected)"
+            if result.turns_detected
+            else ""
+        )
+        tqdm.write(f"[skipped] {job.label}: already processed{suffix}")
     elif result.status == "error":
         tqdm.write(f"[error] {job.label}\n{result.error}")
 
@@ -264,6 +313,7 @@ def run_batch(
     show_preview: bool | None = None,
     skip_existing: bool = False,
     dry_run: bool = False,
+    quiet: bool = False,
 ) -> int:
     """Processes every video under `root_dir`, one after another."""
     root_resolved = root_dir.resolve()
@@ -287,8 +337,13 @@ def run_batch(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     saved_config = {name: getattr(config, name) for name in OVERRIDDEN_CONFIG}
+    if quiet:
+        # Silence main/dataset_writer/stream_utils per-turn and per-clip logs;
+        # the batch bar and per-video result lines below stay visible.
+        config.VERBOSE = False
     speed_recognizer = SpeedRecognizer()
     results: list[JobResult] = []
+    total_turns = 0
     total_clips = 0
 
     bar = tqdm(
@@ -314,16 +369,28 @@ def run_batch(
                         records = pd.read_excel(job.catalog_path)
                     except Exception:
                         records = None
-                results.append(JobResult(job, "skipped", records=records))
+                marker = _read_done_marker(job)
+                turns_detected = marker.get("turns_detected")
+                if not isinstance(turns_detected, int):
+                    turns_detected = 0 if records is None else len(records)
+                results.append(
+                    JobResult(
+                        job, "skipped", records=records, turns_detected=turns_detected
+                    )
+                )
+                total_turns += turns_detected
                 total_clips += 0 if records is None else len(records)
-                bar.set_postfix(clips=total_clips, refresh=False)
+                bar.set_postfix(
+                    turns=total_turns, clips=total_clips, refresh=False
+                )
                 report_result(results[-1])
                 continue
 
             result = run_video(job, show_preview, speed_recognizer)
             results.append(result)
+            total_turns += result.turns_detected
             total_clips += result.clip_count
-            bar.set_postfix(clips=total_clips, refresh=False)
+            bar.set_postfix(turns=total_turns, clips=total_clips, refresh=False)
             report_result(result)
     except KeyboardInterrupt:
         tqdm.write("\nBatch interrupted; keeping results processed so far.")
@@ -357,13 +424,15 @@ def _print_summary(
     for result in results:
         status_counts[result.status] = status_counts.get(result.status, 0) + 1
 
+    total_turns = sum(r.turns_detected for r in results)
     total_clips = sum(r.clip_count for r in results)
     tqdm.write("\nBatch complete.")
     tqdm.write(
         "Videos: "
         + ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
     )
-    tqdm.write(f"Clips in batch: {total_clips}")
+    tqdm.write(f"Turns detected: {total_turns}")
+    tqdm.write(f"Clips saved: {total_clips}")
 
     if combined is not None:
         class_counts = combined["Class"].value_counts().to_dict()
@@ -415,6 +484,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="List the discovered videos and their output folders, then exit.",
     )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Silence per-turn/per-clip internal logs (same as config.VERBOSE = False).",
+    )
     return parser.parse_args(argv)
 
 
@@ -428,6 +503,7 @@ def main() -> int:
             show_preview=show_preview,
             skip_existing=args.skip_existing,
             dry_run=args.dry_run,
+            quiet=args.quiet,
         )
     except (NotADirectoryError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
