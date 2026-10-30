@@ -34,7 +34,7 @@ Targets Python 3.10–3.12 (developed on 3.11). On a headless Linux VM:
 
 ```bash
 sudo apt update
-sudo apt install -y python3.11 python3.11-venv ffmpeg   # ffmpeg optional, for yt-dlp
+sudo apt install -y python3.11 python3.11-venv ffmpeg   # ffmpeg: yt-dlp + --transcode
 
 git clone <repo> && cd TurnDetection
 python3.11 -m venv .venv
@@ -101,11 +101,29 @@ never collide. The combined catalog adds `Group`, `Source Video`, and
 manoeuvres, before the speed/deflection gates) separately from **clips saved**.
 
 Useful flags: `--skip-existing` (resume a batch), `--dry-run` (list discovered
-videos and output folders), `--no-preview` (headless), and `-q/--quiet`
+videos and output folders), `--no-preview` (headless), `-q/--quiet`
 (silence per-turn/per-clip internal logs such as "Turn rejected: no speed…"
-and "Saved 20s Clip #…"; the bars and per-video result lines stay). Quiet mode
-can also be set globally with `VERBOSE = False` in `config.py`. The process
-exits non-zero if any video fails.
+and "Saved 20s Clip #…"; the bars and per-video result lines stay), and
+`--transcode` (convert sources OpenCV cannot decode — e.g. AV1 — to cached
+H.264 copies). Quiet mode can also be set globally with `VERBOSE = False` in
+`config.py`. The process exits non-zero if any video fails.
+
+### AV1 / undecodable sources
+
+OpenCV wheels bundle an FFmpeg build that often only exposes *hardware* AV1
+decoding, so AV1 files fail with `[av1] Failed to get pixel format` even on a
+machine with no GPU decoder. Run the batch with `--transcode`: AV1 sources
+(and anything else OpenCV cannot read) are converted once by system `ffmpeg`
+to H.264 under `<output>/.transcode_cache/`, and the copy is fed to the
+pipeline. Cached copies are reused on later runs (invalidated when the source
+file is newer) and can be deleted at any time. Requires `ffmpeg` on `PATH`;
+audio is dropped and video is re-encoded with `libx264 -crf 20`, so budget
+disk roughly comparable to the sources.
+
+```bash
+python pipeline.py ./videos --output ./batch_output --no-preview \
+    --transcode --skip-existing
+```
 
 Farneback is used by default. Set `USE_LK_OPTICAL_FLOW = True` to use sparse
 Lucas-Kanade tracking of feature points inside the configured ROI. LK tuning

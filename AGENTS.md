@@ -16,7 +16,8 @@ python pipeline.py <root_dir> --output batch_output --no-preview
 Each video gets its own `dataset_turns_3class/` + `road_turn_dataset.xlsx`
 under the output dir; a combined catalog is written at the end. `config.py`
 values are overridden per video and restored afterwards. Flags:
-`--skip-existing`, `--dry-run`, `--no-preview`.
+`--skip-existing`, `--dry-run`, `--no-preview`, `--quiet`, `--transcode`
+(AV1 → cached H.264 via system ffmpeg: `<output>/.transcode_cache/`).
 
 ## Dependencies
 ```
@@ -107,5 +108,5 @@ the original scratch script.
 - Speed gate: a completed turn is discarded unless a speedometer reading (within `SPEED_LIMIT_KMH`) was recognised *during* the turn; the saved speed is the average of those readings.
 - No tests / lint / typecheck configured
 - YouTube URLs require internet + yt-dlp; local files need to exist
-- AV1 codec streams will fail to decode in OpenCV (yt-dlp config excludes them)
+- AV1 codec streams will fail to decode in OpenCV (yt-dlp config excludes them); for local AV1 files run `pipeline.py --transcode` (system ffmpeg → cached H.264 in `<output>/.transcode_cache/`)
 - Press `q` in preview window to stop early; `writer.wait_for_completion()` blocks until all clips finish encoding

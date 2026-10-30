@@ -13,7 +13,7 @@ runs; a combined catalog for the whole batch is written at the end.
 Usage
 -----
     python pipeline.py <root_dir> [--output <dir>] [--no-preview]
-                       [--skip-existing] [--dry-run] [--quiet]
+                       [--skip-existing] [--dry-run] [--quiet] [--transcode]
 
 Expected input layout (each immediate sub-directory is one group)
 ------------------------------------------------------------------
@@ -38,16 +38,24 @@ Notes
   batch finishes, so the module-level defaults in ``config.py`` stay intact.
 * One ``SpeedRecognizer`` is shared across the whole batch, so the EasyOCR
   models load once instead of once per video.
+* ``--transcode`` handles sources this OpenCV build cannot decode (typically
+  AV1, where OpenCV's bundled FFmpeg only exposes hardware decoding). Such
+  files are converted once with system ``ffmpeg`` into
+  ``<output>/.transcode_cache/`` as H.264 and reused on later runs.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+import cv2
 import pandas as pd
 from tqdm import tqdm
 
@@ -59,6 +67,11 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".mpg", ".m
 
 CATALOG_NAME = "road_turn_dataset.xlsx"
 DATASET_NAME = "dataset_turns_3class"
+TRANSCODE_CACHE_NAME = ".transcode_cache"
+
+# H.264 settings for sources OpenCV cannot decode (e.g. AV1 on older wheels).
+TRANSCODE_CRF = 20
+TRANSCODE_PRESET = "veryfast"
 
 # Config values the batch runner overrides per video and restores afterwards.
 OVERRIDDEN_CONFIG = (
@@ -77,10 +90,17 @@ class VideoJob:
     group: str
     path: Path
     output_dir: Path
+    relative: Path  # source path relative to its group folder, suffix stripped
+    decode_path: Path | None = None  # cached H.264 copy, when transcoded
 
     @property
     def label(self) -> str:
         return f"{self.group}/{self.path.name}"
+
+    @property
+    def input_path(self) -> Path:
+        """File handed to OpenCV (the transcoded copy for AV1 sources)."""
+        return self.decode_path if self.decode_path is not None else self.path
 
     @property
     def catalog_path(self) -> Path:
@@ -145,18 +165,194 @@ def discover_jobs(root_dir: Path, output_dir: Path) -> list[VideoJob]:
                 candidate = job_output.with_name(f"{job_output.name}_{suffix}")
                 suffix += 1
             used_paths.add(str(candidate).lower())
-            jobs.append(VideoJob(group_dir.name, video, candidate))
+            jobs.append(VideoJob(group_dir.name, video, candidate, relative))
 
     return jobs
 
 
 def apply_config(job: VideoJob, show_preview: bool | None = None) -> None:
     """Points the shared `config` module at a single video's input/output."""
-    config.INPUT_SOURCE = str(job.path)
+    config.INPUT_SOURCE = str(job.input_path)
     config.DATASET_DIR = str(job.output_dir / DATASET_NAME)
     config.EXCEL_FILE = str(job.catalog_path)
     if show_preview is not None:
         config.SHOW_PREVIEW = show_preview
+
+
+def _probe_codec(path: Path) -> str | None:
+    """Returns the first video stream's codec name via ffprobe, if available."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return lines[0].lower() if completed.returncode == 0 and lines else None
+
+
+def _probe_duration(path: Path) -> float | None:
+    """Returns the container duration in seconds via ffprobe, if available."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        duration = float(completed.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return duration if duration > 0 else None
+
+
+def _can_decode(path: Path) -> bool:
+    """Cheap probe: can OpenCV open this file and decode its first frame?"""
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            return False
+        ok, frame = capture.read()
+        return bool(ok and frame is not None)
+    finally:
+        capture.release()
+
+
+def _transcode_to_h264(
+    job: VideoJob, cache_root: Path, codec: str | None
+) -> tuple[VideoJob, str | None]:
+    """Converts a source OpenCV cannot decode into a cached H.264 copy."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return job, (
+            f"{job.label}: cannot decode {codec or 'this source'} and ffmpeg is "
+            "not installed/on PATH (apt install ffmpeg)"
+        )
+
+    # Source suffix is kept in the cache name so clip.mp4 / clip.mkv (which map
+    # to distinct output folders) cannot share one cached copy.
+    cache_name = f"{job.relative.name}_{job.path.suffix.lstrip('.').lower()}.mp4"
+    cache_path = cache_root / job.group / job.relative.parent / cache_name
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        cache_path.is_file()
+        and cache_path.stat().st_size > 0
+        and cache_path.stat().st_mtime >= job.path.stat().st_mtime
+    ):
+        tqdm.write(f"[transcode] {job.label}: reusing cached H.264 copy")
+        return replace(job, decode_path=cache_path), None
+
+    tmp_path = cache_path.with_name(f"{cache_path.stem}.part{cache_path.suffix}")
+    duration = _probe_duration(job.path)
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(job.path),
+        "-map", "0:v:0", "-an", "-sn", "-dn",
+        "-c:v", "libx264", "-preset", TRANSCODE_PRESET, "-crf", str(TRANSCODE_CRF),
+        "-pix_fmt", "yuv420p", "-progress", "pipe:1", "-nostats",
+        str(tmp_path),
+    ]
+
+    tqdm.write(f"[transcode] {job.label}: {codec or 'undecodable'} -> H.264 ...")
+    bar = tqdm(
+        total=duration,
+        unit="s",
+        desc=f"transcode {job.label}"[:70],
+        position=1,
+        leave=False,
+        dynamic_ncols=True,
+        file=sys.stderr,
+    )
+    process = None
+    # stderr goes to a temp file: a chatty ffmpeg must not fill the pipe while
+    # we are busy reading progress from stdout.
+    with tempfile.TemporaryFile() as err_file:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=err_file,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            for line in process.stdout or ():
+                key, _, value = line.strip().partition("=")
+                if key in {"out_time_us", "out_time_ms"} and value.isdigit():
+                    # Both keys are microseconds in ffmpeg's -progress output.
+                    seconds = int(value) / 1_000_000
+                    done = min(seconds, duration) if duration else seconds
+                    if done > bar.n:
+                        bar.update(done - bar.n)
+                elif key == "progress" and value == "end" and duration:
+                    if duration > bar.n:
+                        bar.update(duration - bar.n)
+            returncode = process.wait()
+            err_file.seek(0)
+            stderr = err_file.read().decode("utf-8", "replace")
+        except KeyboardInterrupt:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            tmp_path.unlink(missing_ok=True)
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            if process is not None and process.poll() is None:
+                process.kill()
+            tmp_path.unlink(missing_ok=True)
+            return job, f"transcode failed for {job.label}: {exc}"
+        finally:
+            bar.close()
+
+    if returncode != 0 or not tmp_path.is_file():
+        detail = [line for line in stderr.strip().splitlines() if line.strip()]
+        message = detail[-1] if detail else f"ffmpeg exited with {returncode}"
+        tmp_path.unlink(missing_ok=True)
+        return job, f"transcode failed for {job.label}: {message}"
+
+    tmp_path.replace(cache_path)
+    tqdm.write(f"[transcode] {job.label}: using cached copy {cache_path}")
+    return replace(job, decode_path=cache_path), None
+
+
+def _prepare_source(
+    job: VideoJob, cache_root: Path, transcode: bool
+) -> tuple[VideoJob, str | None]:
+    """Returns the job to run (with a decodable source) or an error message."""
+    codec = _probe_codec(job.path)
+    is_av1 = bool(codec and codec.startswith("av1"))
+
+    if not transcode:
+        if is_av1 and not _can_decode(job.path):
+            tqdm.write(
+                f"[warn] {job.label}: AV1 is not decodable by this OpenCV build; "
+                "rerun with --transcode to cache an H.264 copy."
+            )
+        return job, None
+
+    if not is_av1 and _can_decode(job.path):
+        return job, None
+    return _transcode_to_h264(job, cache_root, codec)
 
 
 def run_video(
@@ -192,7 +388,7 @@ def run_video(
         apply_config(job, show_preview)
         summary = (
             turn_pipeline.process_video_pipeline(
-                str(job.path), speed_recognizer, on_progress
+                str(job.input_path), speed_recognizer, on_progress
             )
             or {}
         )
@@ -211,10 +407,12 @@ def run_video(
             )
 
         # No catalog is written when no turn survived the speed/deflection gates.
-        # A missing dataset folder as well means the stream could not even be read.
-        status = "no-turns" if Path(config.DATASET_DIR).is_dir() else "unreadable"
-        _mark_done(job, status, turns_detected, 0)
-        return JobResult(job, status, turns_detected=turns_detected)
+        # A missing dataset folder as well means the stream could not even be read;
+        # that is a failure, so no `.done` marker is written and a later run retries it.
+        if Path(config.DATASET_DIR).is_dir():
+            _mark_done(job, "no-turns", turns_detected, 0)
+            return JobResult(job, "no-turns", turns_detected=turns_detected)
+        return JobResult(job, "unreadable", turns_detected=turns_detected)
     except Exception:  # keep the batch going even if one video blows up
         return JobResult(job, "error", error=traceback.format_exc())
     finally:
@@ -314,6 +512,7 @@ def run_batch(
     skip_existing: bool = False,
     dry_run: bool = False,
     quiet: bool = False,
+    transcode: bool = False,
 ) -> int:
     """Processes every video under `root_dir`, one after another."""
     root_resolved = root_dir.resolve()
@@ -345,6 +544,7 @@ def run_batch(
     results: list[JobResult] = []
     total_turns = 0
     total_clips = 0
+    transcode_cache = output_dir / TRANSCODE_CACHE_NAME
 
     bar = tqdm(
         jobs,
@@ -359,9 +559,11 @@ def run_batch(
     )
     try:
         for job in bar:
-            if skip_existing and (
-                job.done_marker.is_file() or job.catalog_path.is_file()
-            ):
+            marker = _read_done_marker(job)
+            already_done = (
+                job.done_marker.is_file() and marker.get("status") != "unreadable"
+            )
+            if skip_existing and (already_done or job.catalog_path.is_file()):
                 # Keep previously produced clips in the combined catalog.
                 records = None
                 if job.catalog_path.is_file():
@@ -369,7 +571,6 @@ def run_batch(
                         records = pd.read_excel(job.catalog_path)
                     except Exception:
                         records = None
-                marker = _read_done_marker(job)
                 turns_detected = marker.get("turns_detected")
                 if not isinstance(turns_detected, int):
                     turns_detected = 0 if records is None else len(records)
@@ -386,7 +587,11 @@ def run_batch(
                 report_result(results[-1])
                 continue
 
-            result = run_video(job, show_preview, speed_recognizer)
+            prepared, prep_error = _prepare_source(job, transcode_cache, transcode)
+            if prep_error is not None:
+                result = JobResult(job, "error", error=prep_error)
+            else:
+                result = run_video(prepared, show_preview, speed_recognizer)
             results.append(result)
             total_turns += result.turns_detected
             total_clips += result.clip_count
@@ -490,6 +695,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Silence per-turn/per-clip internal logs (same as config.VERBOSE = False).",
     )
+    parser.add_argument(
+        "--transcode",
+        "--transcode-av1",
+        dest="transcode",
+        action="store_true",
+        help=(
+            "Transcode AV1 (and any other source OpenCV cannot decode) into "
+            "cached H.264 copies with ffmpeg, then process those (requires ffmpeg)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -504,6 +719,7 @@ def main() -> int:
             skip_existing=args.skip_existing,
             dry_run=args.dry_run,
             quiet=args.quiet,
+            transcode=args.transcode,
         )
     except (NotADirectoryError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
