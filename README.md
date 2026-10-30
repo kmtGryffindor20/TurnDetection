@@ -15,7 +15,8 @@ via optical flow, and exports unannotated 20-second clips into a
 | `speed_recognizer.py` | `SpeedRecognizer` — EasyOCR speedometer readout (speed gate). |
 | `visualization.py` | HUD overlay drawing + `PreviewWindow` (main-thread only).      |
 | `dataset_writer.py`| `DatasetWriter` — background clip encoding + Excel catalog.    |
-| `main.py`          | Wires everything together; the pipeline entry point.           |
+| `main.py`          | Wires everything together; single-video entry point.           |
+| `pipeline.py`      | Batch runner: every video in a directory tree, sequentially.   |
 
 ## Run
 
@@ -26,6 +27,34 @@ python main.py
 
 Edit `INPUT_SOURCE` (and any thresholds) in `config.py`. Set
 `SHOW_PREVIEW = False` for headless servers.
+
+## Batch processing
+
+Process a directory of group folders (each holding one or more videos) in one
+go. `pipeline.py` points `config` at each video, runs `main.py`'s pipeline
+sequentially, and tracks overall progress with `tqdm`:
+
+```bash
+python pipeline.py ./videos --output ./batch_output --no-preview
+```
+
+Expected input layout and per-video outputs:
+
+```
+videos/                          batch_output/
+  group_a/                         group_a/
+    clip_01.mp4                      clip_01/
+    clip_02.mp4                        dataset_turns_3class/{Minor,Major,Sharp}/
+  group_b/                             road_turn_dataset.xlsx
+    clip_01.mp4                      group_b/clip_01/...
+                                   road_turn_dataset.xlsx   # combined catalog
+```
+
+Each video gets its own dataset folder and catalog, so turn IDs and clip names
+never collide. The combined catalog adds `Group`, `Source Video`, and
+`Video` columns. Useful flags: `--skip-existing` (resume a batch),
+`--dry-run` (list discovered videos and output folders), `--no-preview`
+(headless). The process exits non-zero if any video fails.
 
 Farneback is used by default. Set `USE_LK_OPTICAL_FLOW = True` to use sparse
 Lucas-Kanade tracking of feature points inside the configured ROI. LK tuning

@@ -9,6 +9,15 @@ python main.py
 ```
 Edit `INPUT_SOURCE` in `config.py` (local path or YouTube URL). Set `SHOW_PREVIEW = False` for headless servers.
 
+Batch mode (directory of group folders, sequential, tqdm progress):
+```
+python pipeline.py <root_dir> --output batch_output --no-preview
+```
+Each video gets its own `dataset_turns_3class/` + `road_turn_dataset.xlsx`
+under the output dir; a combined catalog is written at the end. `config.py`
+values are overridden per video and restored afterwards. Flags:
+`--skip-existing`, `--dry-run`, `--no-preview`.
+
 ## Dependencies
 ```
 pip install -r requirements.txt
@@ -30,7 +39,8 @@ For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = Fal
 - `speed_recognizer.py` — `SpeedRecognizer.read(frame)` → `(speed_kmh|None, bbox|None)` via EasyOCR in the lower-middle ROI
 - `dataset_writer.py` — `DatasetWriter` background encoding + Excel catalog
 - `visualization.py` — HUD overlay + `PreviewWindow` (main-thread only)
-- `main.py` — Wires everything together
+- `main.py` — Wires everything together (single video)
+- `pipeline.py` — Batch runner: directory of group folders, sequential, tqdm
 
 ## Critical Design Notes
 1. **Post-turn capture uses `sync_gray()`** — While capturing post-turn frames, `TurnDetector.sync_gray(frame)` advances the reference frame without running optical flow. This prevents the next `update()` from diffing frames seconds apart (which would trigger false camera-cut resets).

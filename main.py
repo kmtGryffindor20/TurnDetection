@@ -44,7 +44,7 @@ from visualization import PreviewWindow
 from speed_recognizer import SpeedRecognizer
 
 
-def process_video_pipeline(source_path: str):
+def process_video_pipeline(source_path: str, speed_recognizer=None):
     stream_url = resolve_video_source(source_path)
 
     reader = FrameReader(stream_url).start()
@@ -62,7 +62,9 @@ def process_video_pipeline(source_path: str):
 
     pre_frame_buffer.append(first_frame.copy())
     detector = TurnDetector(first_frame)
-    speed_recognizer = SpeedRecognizer()
+    # A shared recognizer can be passed in (batch mode) so the EasyOCR models
+    # are loaded once instead of per video.
+    speed_recognizer = speed_recognizer or SpeedRecognizer()
     writer = DatasetWriter(fps=fps, frame_size=(width, height))
     preview = PreviewWindow()
 

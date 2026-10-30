@@ -4,3 +4,4 @@ pandas
 numpy
 easyocr
 matplotlib
+tqdm
