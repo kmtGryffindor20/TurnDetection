@@ -9,10 +9,11 @@ python main.py
 ```
 Edit `INPUT_SOURCE` in `config.py` (local path or YouTube URL). Set `SHOW_PREVIEW = False` for headless servers.
 
-## Dependencies (no requirements.txt)
+## Dependencies
 ```
-pip install opencv-python yt-dlp pandas numpy
+pip install -r requirements.txt
 ```
+For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = False` (or no CUDA) EasyOCR still works on CPU, just slower.
 
 ## Architecture (Threading Model)
 | Component | Thread | Responsibility |
@@ -26,6 +27,7 @@ pip install opencv-python yt-dlp pandas numpy
 - `stream_utils.py` — `resolve_video_source()` (YouTube → direct URL via yt-dlp, excludes AV1), `FrameReader` class
 - `optical_flow.py` — `TurnDetector` state machine; call `sync_gray(frame)` during post-roll capture to keep `prev_gray` current without full flow computation
 - `classification.py` — `classify_turn(deflection)` → `None`/`Minor`/`Major`/`Sharp`
+- `speed_recognizer.py` — `SpeedRecognizer.read(frame)` → `(speed_kmh|None, bbox|None)` via EasyOCR in the lower-middle ROI
 - `dataset_writer.py` — `DatasetWriter` background encoding + Excel catalog
 - `visualization.py` — HUD overlay + `PreviewWindow` (main-thread only)
 - `main.py` — Wires everything together
@@ -48,6 +50,10 @@ pip install opencv-python yt-dlp pandas numpy
 | `DEFLECTION_DISCARD` / `MINOR_MAX` / `MAJOR_MAX` | 10 / 30 / 60 | Classification boundaries (abs accumulated dx) |
 | `ROI_Y` / `ROI_X` | (0.45, 0.85) / (0.25, 0.75) | Optical flow region of interest (fraction of frame) |
 | `CLIP_WRITER_WORKERS` | 2 | Background encoding threads |
+| `SPEED_ENABLED` | True | Gate: only save turns with a recognised speed |
+| `SPEED_LIMIT_KMH` | 200.0 | Readings above this are rejected as noise |
+| `SPEED_SAMPLE_STEP` | 6 | Recognise the readout every N frames |
+| `SPEED_ROI_Y` / `SPEED_ROI_X` | (0.60, 1.00) / (0.25, 0.75) | Speedometer ROI (fraction of frame) |
 
 
 ## Output Structure
@@ -56,8 +62,27 @@ dataset_turns_3class/
   Minor/
   Major/
   Sharp/
-road_turn_dataset.xlsx  # Catalog with Turn ID, Class, Deflection Value, Saved Clip Address
+road_turn_dataset.xlsx  # Catalog with Turn ID, Class, Deflection Value, Average Speed (km/h), Saved Clip Address
 ```
+
+## Road Trajectory Tool (`road_trajectory/`)
+Standalone tool (shares the venv and `speed_recognizer.SpeedRecognizer`) that
+maps an already-split turn clip to a 2D top-down path: resize → grayscale →
+blank above horizon → Farneback flow → mean horizontal displacement → rolling
+average + deadband → `YAW_SIGN * PIXELS_TO_RADIANS` → kinematic bicycle
+odometry, with the speedometer read by EasyOCR every `SPEED_SAMPLE_STEP`
+frames.
+```
+python road_trajectory/main.py [clip-or-folder]   # default: one dataset clip
+```
+Classes: `FlowYawEstimator`, `KinematicBicycle`, `RoadTrajectoryMapper`
+(`trajectory_mapper.py`), `SpeedSampler` (`main.py`); plotting/preview in
+`trajectory_visualization.py`; tunables in `trajectory_config.py`.
+Works on `dataset_turns_3class/` clips only (a folder arg maps them all).
+Writes `road_trajectory/output/<Class>_<clip>.{png,csv}`; plots are vertical
+(+Y forward = up, +X = right, positive heading = left turn). Key knobs:
+`PIXELS_TO_RADIANS` (calibration), `YAW_SIGN` (left/right mirror). `flow.py` is
+the original scratch script.
 
 ## Common Tasks
 - **Change input source**: Edit `config.INPUT_SOURCE`
@@ -67,7 +92,7 @@ road_turn_dataset.xlsx  # Catalog with Turn ID, Class, Deflection Value, Saved C
 - **Tune ROI**: Adjust `ROI_Y` / `ROI_X` (fractions of frame height/width)
 
 ## Gotchas
-- No requirements.txt — install deps manually (requirements.txt now exists)
+- Speed gate: a completed turn is discarded unless a speedometer reading (within `SPEED_LIMIT_KMH`) was recognised *during* the turn; the saved speed is the average of those readings.
 - No tests / lint / typecheck configured
 - YouTube URLs require internet + yt-dlp; local files need to exist
 - AV1 codec streams will fail to decode in OpenCV (yt-dlp config excludes them)

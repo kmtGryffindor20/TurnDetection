@@ -12,6 +12,7 @@ via optical flow, and exports unannotated 20-second clips into a
 | `stream_utils.py`  | Resolves local/YouTube sources; `FrameReader` background thread. |
 | `optical_flow.py`  | `TurnDetector` — Farneback or LK flow + turn state machine.   |
 | `classification.py`| Deflection → `Minor`/`Major`/`Sharp` mapping.                  |
+| `speed_recognizer.py` | `SpeedRecognizer` — EasyOCR speedometer readout (speed gate). |
 | `visualization.py` | HUD overlay drawing + `PreviewWindow` (main-thread only).      |
 | `dataset_writer.py`| `DatasetWriter` — background clip encoding + Excel catalog.    |
 | `main.py`          | Wires everything together; the pipeline entry point.           |
@@ -29,6 +30,20 @@ Edit `INPUT_SOURCE` (and any thresholds) in `config.py`. Set
 Farneback is used by default. Set `USE_LK_OPTICAL_FLOW = True` to use sparse
 Lucas-Kanade tracking of feature points inside the configured ROI. LK tuning
 options are also available in `config.py`.
+
+## Speed gate
+
+A completed optical-flow turn is only saved when a speedometer reading is
+recognised *during* the turn (see `speed_recognizer.py`). The readout is
+located with EasyOCR inside `SPEED_ROI_Y`/`SPEED_ROI_X` (lower-middle console),
+recognised every `SPEED_SAMPLE_STEP` frames, and any reading above
+`SPEED_LIMIT_KMH` is rejected as noise. Readings collected while the turn is
+active are averaged, and that average becomes the clip's `Average Speed (km/h)`
+in the Excel catalog. Turns with no valid reading are discarded.
+
+Set `SPEED_ENABLED = False` to disable the gate and save every turn (the speed
+column is then blank). GPU recognition needs a CUDA build of `torch`; set
+`SPEED_GPU = False` to run on CPU.
 
 ## Threading design
 

@@ -1,7 +1,7 @@
 """Central configuration for the turn-detection dataset pipeline."""
 
 # Input source: local file path OR YouTube URL
-INPUT_SOURCE = "./data_1.mp4"
+INPUT_SOURCE = "./720p.mp4"
 
 # Output locations
 DATASET_DIR = "dataset_turns_3class"
@@ -44,3 +44,20 @@ ROI_X = (0.25, 0.75)
 
 # Horizontal-dominance ratio for the turn-vector validity check
 RATIO_DOMINANCE = 1.05
+
+# Speed recognition gate (EasyOCR)
+# A completed turn is only saved when a speedometer reading is recognised
+# during the turn. The clip's saved speed is the average of the valid readings
+# collected over the turn's duration.
+SPEED_ENABLED = True
+SPEED_LIMIT_KMH = 200.0  # readings above this are rejected as noise
+SPEED_SAMPLE_STEP = 6  # recognise the readout every N frames
+
+# Speedometer ROI, as fractions of frame height/width (lower-middle console)
+SPEED_ROI_Y = (0.60, 1.00)
+SPEED_ROI_X = (0.25, 0.75)
+
+# EasyOCR engine settings
+SPEED_LANGS = ("en",)
+SPEED_GPU = True  # requires a CUDA build of torch (see README)
+SPEED_MODEL_DIR = "vendor/easyocr"  # git-ignored; keeps models local

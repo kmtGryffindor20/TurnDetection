@@ -32,11 +32,12 @@ class DatasetWriter:
         for class_name in config.CLASSES:
             os.makedirs(os.path.join(config.DATASET_DIR, class_name), exist_ok=True)
 
-    def submit_clip(self, frames, accumulated_dx: float):
+    def submit_clip(self, frames, accumulated_dx: float, average_speed: float = None):
         """
         Classifies the deflection and, if it clears the discard threshold,
         hands the frame sequence off to a background thread for encoding.
         `frames` should be the full pre+post frame list, in order.
+        `average_speed` is the turn's mean speedometer reading (km/h).
         Returns the assigned turn ID, or None if the deflection was discarded.
         """
         turn_type = classify_turn(accumulated_dx)
@@ -48,12 +49,13 @@ class DatasetWriter:
             turn_id = self._turn_count
 
         future = self.executor.submit(
-            self._encode_clip, turn_id, turn_type, list(frames), accumulated_dx
+            self._encode_clip, turn_id, turn_type, list(frames), accumulated_dx,
+            average_speed,
         )
         self._futures.append(future)
         return turn_id
 
-    def _encode_clip(self, turn_id, turn_type, frames, accumulated_dx):
+    def _encode_clip(self, turn_id, turn_type, frames, accumulated_dx, average_speed):
         clip_filename = f"turn_{turn_id:04d}.mp4"
         class_folder = os.path.join(config.DATASET_DIR, turn_type)
         clip_path = os.path.abspath(os.path.join(class_folder, clip_filename))
@@ -70,14 +72,19 @@ class DatasetWriter:
             "Turn ID": turn_id,
             "Class": turn_type,
             "Deflection Value": round(accumulated_dx, 2),
+            "Average Speed (km/h)": (
+                round(average_speed, 1) if average_speed is not None else None
+            ),
             "Saved Clip Address": clip_path,
         }
         with self._lock:
             self._records.append(record)
 
+        speed_text = f"{average_speed:.1f} km/h" if average_speed is not None else "n/a"
         print(
             f"Saved 20s Clip #{turn_id} ---> Class: '{turn_type}' "
-            f"(Deflection: {accumulated_dx:.2f}) | Path: {clip_path}"
+            f"(Deflection: {accumulated_dx:.2f}, Avg Speed: {speed_text}) "
+            f"| Path: {clip_path}"
         )
         return record
 

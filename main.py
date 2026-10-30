@@ -18,6 +18,12 @@ DatasetWriter (thread pool)
     Encodes finished 20-second clips to disk and updates the in-memory
     catalog concurrently, so VideoWriter I/O never stalls frame processing.
 
+Speed gate
+    A completed turn is only saved when a speedometer reading within
+    SPEED_LIMIT_KMH was recognised during the turn (see speed_recognizer.py).
+    The reading is sampled while the turn is active, averaged over the turn's
+    duration, and stored as the clip's speed in the Excel catalog.
+
 Buffering note
 ----------------
 Every frame -- whether a turn is active or not -- flows through the same
@@ -35,6 +41,7 @@ from stream_utils import resolve_video_source, FrameReader
 from optical_flow import TurnDetector
 from dataset_writer import DatasetWriter
 from visualization import PreviewWindow
+from speed_recognizer import SpeedRecognizer
 
 
 def process_video_pipeline(source_path: str):
@@ -55,13 +62,20 @@ def process_video_pipeline(source_path: str):
 
     pre_frame_buffer.append(first_frame.copy())
     detector = TurnDetector(first_frame)
+    speed_recognizer = SpeedRecognizer()
     writer = DatasetWriter(fps=fps, frame_size=(width, height))
     preview = PreviewWindow()
 
     capturing_post_roll = False
     post_roll_frames = []
     post_roll_accum_dx = 0.0
+    post_roll_average_speed = None
     pending_pre_snapshot = []
+
+    # Speed readings collected across the duration of the current turn.
+    turn_speeds = []
+    hud_speed = None
+    hud_bbox = None
 
     frame_idx = 0
     print("Analyzing video stream... Press 'q' inside the preview window to stop early.")
@@ -79,20 +93,51 @@ def process_video_pipeline(source_path: str):
                 detector.sync_gray(frame)
                 if len(post_roll_frames) >= post_buffer_size:
                     full_clip = pending_pre_snapshot + post_roll_frames
-                    writer.submit_clip(full_clip, post_roll_accum_dx)
+                    writer.submit_clip(
+                        full_clip, post_roll_accum_dx, post_roll_average_speed
+                    )
                     capturing_post_roll = False
                     post_roll_frames = []
                     pending_pre_snapshot = []
+                    post_roll_average_speed = None
             elif frame_idx % config.FRAME_STEP == 0:
                 event, deflection = detector.update(frame)
-                if event == "completed":
-                    pending_pre_snapshot = list(pre_frame_buffer)
-                    post_roll_accum_dx = deflection
-                    post_roll_frames = []
-                    capturing_post_roll = True
+                if event == "ongoing" and detector.turn_step_counter == 1:
+                    turn_speeds = []  # a new turn just started
+                elif event == "completed":
+                    average_speed = (
+                        sum(turn_speeds) / len(turn_speeds) if turn_speeds else None
+                    )
+                    if average_speed is None:
+                        print(
+                            "Turn rejected: no speed within the limit was "
+                            "detected during the turn."
+                        )
+                    else:
+                        pending_pre_snapshot = list(pre_frame_buffer)
+                        post_roll_accum_dx = deflection
+                        post_roll_average_speed = average_speed
+                        post_roll_frames = []
+                        capturing_post_roll = True
+                    turn_speeds = []
+
+            # Speed recognition: throttled, feeds the live HUD everywhere and is
+            # accumulated across the turn's duration for the saved average.
+            if frame_idx % config.SPEED_SAMPLE_STEP == 0:
+                speed, bbox = speed_recognizer.read(frame)
+                hud_speed, hud_bbox = speed, bbox
+                if (
+                    speed is not None
+                    and detector.is_turning
+                    and 0 < speed <= config.SPEED_LIMIT_KMH
+                ):
+                    turn_speeds.append(speed)
 
             is_turning_now = detector.is_turning or capturing_post_roll
-            if not preview.show(frame, detector.current_dx, detector.current_dy, is_turning_now):
+            if not preview.show(
+                frame, detector.current_dx, detector.current_dy, is_turning_now,
+                hud_speed, hud_bbox,
+            ):
                 print("Execution manually stopped by user.")
                 break
     finally:
