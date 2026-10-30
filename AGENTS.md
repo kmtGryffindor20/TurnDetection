@@ -20,9 +20,10 @@ values are overridden per video and restored afterwards. Flags:
 
 ## Dependencies
 ```
-pip install -r requirements.txt
+pip install -r requirements.txt          # desktop (OpenCV GUI preview)
+pip install -r requirements-server.txt   # headless VM: opencv-python-headless
 ```
-For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = False` (or no CUDA) EasyOCR still works on CPU, just slower.
+For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = False` (or no CUDA) EasyOCR still works on CPU, just slower. On a headless server also install torch/torchvision first (CUDA or CPU index), set `SPEED_GPU` accordingly, and run with `--no-preview`. EasyOCR models live in git-ignored `vendor/easyocr/` (auto-downloaded on first use).
 
 ## Architecture (Threading Model)
 | Component | Thread | Responsibility |
@@ -40,7 +41,7 @@ For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = Fal
 - `dataset_writer.py` — `DatasetWriter` background encoding + Excel catalog
 - `visualization.py` — HUD overlay + `PreviewWindow` (main-thread only)
 - `main.py` — Wires everything together (single video)
-- `pipeline.py` — Batch runner: directory of group folders, sequential, tqdm
+- `pipeline.py` — Batch runner: directory of group folders, sequential; outer `Videos: n/N` bar + inner per-video frame bar (via `process_video_pipeline(progress_callback=...)`)
 
 ## Critical Design Notes
 1. **Post-turn capture uses `sync_gray()`** — While capturing post-turn frames, `TurnDetector.sync_gray(frame)` advances the reference frame without running optical flow. This prevents the next `update()` from diffing frames seconds apart (which would trigger false camera-cut resets).

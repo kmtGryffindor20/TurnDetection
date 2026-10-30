@@ -5,3 +5,4 @@ numpy
 easyocr
 matplotlib
 tqdm
+openpyxl

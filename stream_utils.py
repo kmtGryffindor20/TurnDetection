@@ -85,6 +85,9 @@ class FrameReader:
         self.fps = int(self.cap.get(cv2.CAP_PROP_FPS)) or 30
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # 0 for streams/live sources and some containers; used only for
+        # progress reporting, so an unknown total is fine.
+        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
         self._queue = queue.Queue(maxsize=queue_size or config.FRAME_QUEUE_SIZE)
         self._stop_event = threading.Event()

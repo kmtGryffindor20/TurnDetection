@@ -44,11 +44,21 @@ from visualization import PreviewWindow
 from speed_recognizer import SpeedRecognizer
 
 
-def process_video_pipeline(source_path: str, speed_recognizer=None):
+def process_video_pipeline(source_path: str, speed_recognizer=None, progress_callback=None):
+    """
+    Processes one video end to end.
+
+    `speed_recognizer` lets a caller reuse a single EasyOCR-backed recognizer
+    across videos (batch mode). `progress_callback`, when given, is called as
+    `progress_callback(done_frames, total_frames)` after every frame; total is
+    0 when the container does not report a frame count.
+    """
     stream_url = resolve_video_source(source_path)
 
     reader = FrameReader(stream_url).start()
     fps, width, height = reader.fps, reader.width, reader.height
+    if progress_callback is not None:
+        progress_callback(0, reader.frame_count)
 
     pre_buffer_size = max(fps * config.PRE_TURN_SECONDS, 1)
     post_buffer_size = max(fps * config.POST_TURN_SECONDS, 1)
@@ -88,6 +98,8 @@ def process_video_pipeline(source_path: str, speed_recognizer=None):
             if frame is None:
                 break
             frame_idx += 1
+            if progress_callback is not None:
+                progress_callback(frame_idx, reader.frame_count)
             pre_frame_buffer.append(frame.copy())
 
             if capturing_post_roll:

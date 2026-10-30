@@ -1,0 +1,14 @@
+# Headless server / VM install (no OpenCV GUI support).
+# Run the pipeline with --no-preview or set SHOW_PREVIEW = False.
+#
+# torch/torchvision are installed separately so you can pick the CUDA or CPU
+# build matching the machine -- see the "Server / VM install" section of the
+# README.
+opencv-python-headless
+yt-dlp
+pandas
+numpy
+easyocr
+matplotlib
+tqdm
+openpyxl

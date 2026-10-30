@@ -28,11 +28,55 @@ python main.py
 Edit `INPUT_SOURCE` (and any thresholds) in `config.py`. Set
 `SHOW_PREVIEW = False` for headless servers.
 
+## Server / VM install
+
+Targets Python 3.10–3.12 (developed on 3.11). On a headless Linux VM:
+
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv ffmpeg   # ffmpeg optional, for yt-dlp
+
+git clone <repo> && cd TurnDetection
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+
+# NVIDIA GPU build (check your driver with `nvidia-smi` first):
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# CPU-only alternative:
+# python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+python -m pip install -r requirements-server.txt
+```
+
+`requirements-server.txt` uses `opencv-python-headless`, so no GUI/`libGL`
+packages are needed — always run with `--no-preview` (or set
+`SHOW_PREVIEW = False`). Sanity check the install:
+
+```bash
+python -c "import cv2, torch, easyocr, pandas; print(cv2.__version__, torch.__version__, torch.cuda.is_available())"
+```
+
+EasyOCR downloads its models into `vendor/easyocr/` on first use (~95 MB). On
+an offline VM, copy `vendor/easyocr/` over from a machine that already has it.
+Run commands from the repo root so the relative `SPEED_MODEL_DIR` resolves.
+
+Set `SPEED_GPU = True` only when `torch.cuda.is_available()` is `True`,
+otherwise `SPEED_GPU = False`. For long batches use `tmux`, `nohup`, or a
+systemd unit; per-video outputs plus `--skip-existing` make a disconnect safe
+to resume:
+
+```bash
+nohup python pipeline.py ./videos --output ./batch_output --no-preview \
+    --skip-existing > batch.log 2>&1 &
+```
+
 ## Batch processing
 
 Process a directory of group folders (each holding one or more videos) in one
 go. `pipeline.py` points `config` at each video, runs `main.py`'s pipeline
-sequentially, and tracks overall progress with `tqdm`:
+sequentially, and shows two tqdm bars: `Videos: n/N` for the batch and a
+per-video frame bar (percentage/ETA) for the video being processed:
 
 ```bash
 python pipeline.py ./videos --output ./batch_output --no-preview

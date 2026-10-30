@@ -1,8 +1,10 @@
 """End-to-end batch runner: split turns for every video in a directory tree.
 
 Walks a directory of group folders, points :mod:`config` at each video in
-turn, and runs :func:`main.process_video_pipeline` sequentially while a tqdm
-bar tracks overall progress. Each video gets its own dataset folder and Excel
+turn, and runs :func:`main.process_video_pipeline` sequentially. Progress is
+shown with two tqdm bars: an outer ``Videos: n/N`` counter and an inner
+per-video frame bar (percentage/ETA) driven by the pipeline's
+``progress_callback``. Each video gets its own dataset folder and Excel
 catalog so clip names and turn IDs never collide between runs; a combined
 catalog for the whole batch is written at the end.
 
@@ -156,10 +158,31 @@ def run_video(
     if not job.path.is_file():
         return JobResult(job, "missing")
 
+    frame_bar = None
+
+    def on_progress(done: int, total: int) -> None:
+        """Lazily creates and advances this video's frame-level progress bar."""
+        nonlocal frame_bar
+        if frame_bar is None:
+            frame_bar = tqdm(
+                total=total or None,
+                desc=job.label[:60],
+                unit="frame",
+                position=1,
+                leave=False,
+                dynamic_ncols=True,
+                file=sys.stderr,
+            )
+        delta = done - frame_bar.n
+        if delta:
+            frame_bar.update(delta)
+
     try:
         job.output_dir.mkdir(parents=True, exist_ok=True)
         apply_config(job, show_preview)
-        turn_pipeline.process_video_pipeline(str(job.path), speed_recognizer)
+        turn_pipeline.process_video_pipeline(
+            str(job.path), speed_recognizer, on_progress
+        )
 
         if job.catalog_path.is_file():
             records = pd.read_excel(job.catalog_path)
@@ -175,6 +198,9 @@ def run_video(
         return JobResult(job, status)
     except Exception:  # keep the batch going even if one video blows up
         return JobResult(job, "error", error=traceback.format_exc())
+    finally:
+        if frame_bar is not None:
+            frame_bar.close()
 
 
 def _mark_done(job: VideoJob, status: str) -> None:
@@ -269,12 +295,15 @@ def run_batch(
         jobs,
         desc="Videos",
         unit="video",
+        position=0,
+        leave=True,
         dynamic_ncols=True,
         file=sys.stderr,
+        # Video progress is just n/N; the active video has its own frame bar.
+        bar_format="{desc}: {n_fmt}/{total_fmt}{postfix}",
     )
     try:
         for job in bar:
-            bar.set_description(job.label[:70])
             if skip_existing and (
                 job.done_marker.is_file() or job.catalog_path.is_file()
             ):
