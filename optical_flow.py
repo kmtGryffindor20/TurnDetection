@@ -37,14 +37,17 @@ class TurnDetector:
         self.prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     def _compute_flow(self, gray):
-        flow = cv2.calcOpticalFlowFarneback(
-            self.prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
-        )
+        # Crop the ROI *before* Farneback: dense flow on the full frame is by
+        # far the most expensive stage (hundreds of ms at 1080p, seconds at
+        # 4K) and the rest of the field is never used.
         h, w = gray.shape
         y0, y1 = int(h * config.ROI_Y[0]), int(h * config.ROI_Y[1])
         x0, x1 = int(w * config.ROI_X[0]), int(w * config.ROI_X[1])
-        roi_flow = flow[y0:y1, x0:x1]
-        return float(np.mean(roi_flow[..., 0])), float(np.mean(roi_flow[..., 1])), flow
+        flow = cv2.calcOpticalFlowFarneback(
+            self.prev_gray[y0:y1, x0:x1], gray[y0:y1, x0:x1],
+            None, 0.5, 3, 15, 3, 5, 1.2, 0,
+        )
+        return float(np.mean(flow[..., 0])), float(np.mean(flow[..., 1])), flow
 
     def update(self, frame):
         """

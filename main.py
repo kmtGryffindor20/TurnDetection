@@ -35,6 +35,7 @@ comparing frames that are seconds apart, which is what previously
 triggered spurious camera-cut resets).
 """
 from collections import deque
+import time
 
 import config
 from stream_utils import resolve_video_source, FrameReader
@@ -75,6 +76,10 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
     # A shared recognizer can be passed in (batch mode) so the EasyOCR models
     # are loaded once instead of per video.
     speed_recognizer = speed_recognizer or SpeedRecognizer()
+    if config.SPEED_ENABLED:
+        # Load the models before the timed loop so the one-off startup cost is
+        # reported separately and does not inflate the OCR stage timings.
+        _ = speed_recognizer.reader
     writer = DatasetWriter(fps=fps, frame_size=(width, height))
     preview = PreviewWindow()
 
@@ -93,12 +98,18 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
     # A turn "detected" is any completed flow manoeuvre; it is only saved as a
     # clip if it clears the speed gate and the classification discard threshold.
     turns_detected = 0
+    stage_seconds = {"read": 0.0, "flow": 0.0, "ocr": 0.0}
+    stage_calls = {"read": 0, "flow": 0, "ocr": 0}
+    loop_started = time.perf_counter()
     if config.VERBOSE:
         print("Analyzing video stream... Press 'q' inside the preview window to stop early.")
 
     try:
         while True:
+            t0 = time.perf_counter()
             frame = reader.read()
+            stage_seconds["read"] += time.perf_counter() - t0
+            stage_calls["read"] += 1
             if frame is None:
                 break
             frame_idx += 1
@@ -119,7 +130,10 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
                     pending_pre_snapshot = []
                     post_roll_average_speed = None
             elif frame_idx % config.FRAME_STEP == 0:
+                t0 = time.perf_counter()
                 event, deflection = detector.update(frame)
+                stage_seconds["flow"] += time.perf_counter() - t0
+                stage_calls["flow"] += 1
                 if event == "ongoing" and detector.turn_step_counter == 1:
                     turn_speeds = []  # a new turn just started
                 elif event == "completed":
@@ -144,7 +158,10 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
             # Speed recognition: throttled, feeds the live HUD everywhere and is
             # accumulated across the turn's duration for the saved average.
             if frame_idx % config.SPEED_SAMPLE_STEP == 0:
+                t0 = time.perf_counter()
                 speed, bbox = speed_recognizer.read(frame)
+                stage_seconds["ocr"] += time.perf_counter() - t0
+                stage_calls["ocr"] += 1
                 hud_speed, hud_bbox = speed, bbox
                 if (
                     speed is not None
@@ -162,11 +179,23 @@ def process_video_pipeline(source_path: str, speed_recognizer=None, progress_cal
                     print("Execution manually stopped by user.")
                 break
     finally:
+        loop_elapsed = time.perf_counter() - loop_started
         reader.stop()
         preview.close()
         writer.wait_for_completion()
         writer.flush_excel()
         writer.shutdown()
+
+    if config.VERBOSE:
+        accounted = sum(stage_seconds.values())
+        parts = [
+            f"{name} {stage_seconds[name]:.1f}s/{stage_calls[name]}"
+            f" ({stage_seconds[name] / stage_calls[name] * 1000:.0f} ms)"
+            for name in ("read", "flow", "ocr")
+            if stage_calls[name]
+        ]
+        parts.append(f"other {loop_elapsed - accounted:.1f}s")
+        print(f"Stage timing ({loop_elapsed:.1f}s): " + ", ".join(parts))
 
     # Consumed by the batch runner for its running/summary counters.
     return {

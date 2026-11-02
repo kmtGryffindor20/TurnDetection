@@ -8,6 +8,8 @@ configured ROI is taken as the reading.
 Mirrors the rest of the pipeline (`TurnDetector`, `FrameReader`, ...):
 construct once, then call `read(frame)` per frame.
 """
+import time
+
 import cv2
 import numpy as np
 
@@ -34,12 +36,25 @@ class SpeedRecognizer:
         # GPU are only touched once a frame is actually read.
         if self._reader is None:
             import easyocr
+            import torch
 
+            print(f"Loading EasyOCR models from '{config.SPEED_MODEL_DIR}' ...")
+            started = time.perf_counter()
             self._reader = easyocr.Reader(
                 list(config.SPEED_LANGS),
                 gpu=config.SPEED_GPU,
                 model_storage_directory=config.SPEED_MODEL_DIR,
                 user_network_directory=config.SPEED_MODEL_DIR,
+            )
+            gpu_name = (
+                torch.cuda.get_device_name(0)
+                if torch.cuda.is_available()
+                else "none"
+            )
+            print(
+                f"EasyOCR loaded in {time.perf_counter() - started:.1f}s on "
+                f"'{self._reader.device}' (torch {torch.__version__}, "
+                f"CUDA {torch.version.cuda}, GPU: {gpu_name})"
             )
         return self._reader
 
@@ -73,7 +88,11 @@ class SpeedRecognizer:
         if roi.size == 0:
             return None, None
 
-        largest_bbox, text = self._largest(self.reader.readtext(roi))
+        # Batch recognition when the ROI contains several boxes; EasyOCR
+        # already falls back to a sequential loop on CPU, so this only helps
+        # on GPU and does not change results.
+        results = self.reader.readtext(roi, batch_size=8)
+        largest_bbox, text = self._largest(results)
         if largest_bbox is None:
             return None, None
 
