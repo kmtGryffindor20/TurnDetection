@@ -36,6 +36,13 @@ FRAME_QUEUE_SIZE = 128  # Bounded queue between reader thread and processor
 CLIP_WRITER_WORKERS = 2  # Concurrent background clip-encoding threads
 READER_QUEUE_TIMEOUT = 5.0  # Seconds to wait for a frame before giving up
 
+# Clip encoding. H.264 via system ffmpeg is ~8-10x smaller than OpenCV's
+# mp4v default at the same resolution. Lower CLIP_CRF = better quality/larger.
+# If ffmpeg (with libx264) is unavailable, DatasetWriter falls back to mp4v.
+CLIP_CRF = 23
+CLIP_PRESET = "veryfast"  # x264 preset: ultrafast..veryslow
+CLIP_FFMPEG_THREADS = 2  # encoder threads per clip (2 clips run concurrently)
+
 # Classification boundaries (accumulated horizontal deflection)
 DEFLECTION_DISCARD = 10.0
 DEFLECTION_MINOR_MAX = 30.0

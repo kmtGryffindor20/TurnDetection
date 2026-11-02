@@ -26,12 +26,14 @@ pip install -r requirements-server.txt   # headless VM: opencv-python-headless
 ```
 For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = False` (or no CUDA) EasyOCR still works on CPU, just slower. On a headless server also install torch/torchvision first (CUDA or CPU index), set `SPEED_GPU` accordingly, and run with `--no-preview`. EasyOCR models live in git-ignored `vendor/easyocr/` (auto-downloaded on first use).
 
+Clip encoding uses system `ffmpeg` with `libx264`; if it is missing, `DatasetWriter` falls back to OpenCV `mp4v` and clips are ~8-10x larger. `ffmpeg` is also used by `pipeline.py --transcode` and yt-dlp.
+
 ## Architecture (Threading Model)
 | Component | Thread | Responsibility |
 |-----------|--------|----------------|
 | `FrameReader` | Background (daemon) | Reads/decodes frames into bounded queue; drops oldest frame when full to stay near-real-time |
 | Main thread | Main | Pulls frames, runs `TurnDetector.update()`, manages rolling buffer, drives OpenCV preview (`imshow`/`waitKey` must stay on main thread) |
-| `DatasetWriter` | ThreadPoolExecutor (`CLIP_WRITER_WORKERS=2`) | Encodes clips to disk in background; maintains thread-safe catalog flushed to Excel on shutdown |
+| `DatasetWriter` | ThreadPoolExecutor (`CLIP_WRITER_WORKERS=2`) | Encodes H.264 clips via a system `ffmpeg` pipe (OpenCV `mp4v` fallback); maintains thread-safe catalog flushed to Excel on shutdown |
 
 ## Key Files
 - `config.py` — All tunable constants (thresholds, durations, paths, ROI, threading)
@@ -39,7 +41,8 @@ For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = Fal
 - `optical_flow.py` — `TurnDetector` state machine; call `sync_gray(frame)` during post-roll capture to keep `prev_gray` current without full flow computation
 - `classification.py` — `classify_turn(deflection)` → `None`/`Minor`/`Major`/`Sharp`
 - `speed_recognizer.py` — `SpeedRecognizer.read(frame)` → `(speed_kmh|None, bbox|None)` via EasyOCR in the lower-middle ROI
-- `dataset_writer.py` — `DatasetWriter` background encoding + Excel catalog
+- `dataset_writer.py` — `DatasetWriter` background H.264 encoding (ffmpeg pipe) + Excel catalog
+- `compress_clips.py` — re-encode existing `*.mp4` clips to H.264 in place to reclaim disk space
 - `visualization.py` — HUD overlay + `PreviewWindow` (main-thread only)
 - `main.py` — Wires everything together (single video)
 - `pipeline.py` — Batch runner: directory of group folders, sequential; outer `Videos: n/N` bar + inner per-video frame bar (via `process_video_pipeline(progress_callback=...)`)
@@ -62,6 +65,7 @@ For GPU speed recognition install a CUDA build of `torch`; with `SPEED_GPU = Fal
 | `DEFLECTION_DISCARD` / `MINOR_MAX` / `MAJOR_MAX` | 10 / 30 / 60 | Classification boundaries (abs accumulated dx) |
 | `ROI_Y` / `ROI_X` | (0.45, 0.85) / (0.25, 0.75) | Optical flow region of interest (fraction of frame) |
 | `CLIP_WRITER_WORKERS` | 2 | Background encoding threads |
+| `CLIP_CRF` / `CLIP_PRESET` / `CLIP_FFMPEG_THREADS` | 23 / veryfast / 2 | H.264 clip quality/speed; ~16 MB per 20s 720p60 clip |
 | `SPEED_ENABLED` | True | Gate: only save turns with a recognised speed |
 | `SPEED_LIMIT_KMH` | 200.0 | Readings above this are rejected as noise |
 | `SPEED_SAMPLE_STEP` | 6 | Recognise the readout every N frames |
@@ -77,6 +81,8 @@ dataset_turns_3class/
   Sharp/
 road_turn_dataset.xlsx  # Catalog with Turn ID, Class, Deflection Value, Average Speed (km/h), Saved Clip Address
 ```
+Clips are H.264 (`libx264`, CRF 23 by default); a 20s 720p60 clip is ~16 MB
+instead of ~140 MB with OpenCV `mp4v`.
 
 ## Road Trajectory Tool (`road_trajectory/`)
 Standalone tool (shares the venv and `speed_recognizer.SpeedRecognizer`) that
@@ -103,10 +109,12 @@ the original scratch script.
 - **Adjust sensitivity**: Modify `TURN_THRESHOLD`, `MIN_TURN_DURATION`, classification boundaries
 - **Change clip length**: Modify `PRE_TURN_SECONDS` / `POST_TURN_SECONDS`
 - **Tune ROI**: Adjust `ROI_Y` / `ROI_X` (fractions of frame height/width)
+- **Shrink an existing dataset**: `python compress_clips.py dataset_turns_3class` (`--dry-run` first; `--crf 26` for smaller files)
 
 ## Gotchas
 - Speed gate: a completed turn is discarded unless a speedometer reading (within `SPEED_LIMIT_KMH`) was recognised *during* the turn; the saved speed is the average of those readings.
 - No tests / lint / typecheck configured
 - YouTube URLs require internet + yt-dlp; local files need to exist
 - AV1 codec streams will fail to decode in OpenCV (yt-dlp config excludes them); for local AV1 files run `pipeline.py --transcode` (system ffmpeg → cached H.264 in `<output>/.transcode_cache/`)
+- Missing `ffmpeg`/`libx264` silently falls back to OpenCV `mp4v`, producing ~8-10x larger clips; run `compress_clips.py` to convert existing datasets
 - Press `q` in preview window to stop early; `writer.wait_for_completion()` blocks until all clips finish encoding

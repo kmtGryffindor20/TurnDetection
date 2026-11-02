@@ -15,6 +15,7 @@ via optical flow, and exports unannotated 20-second clips into a
 | `speed_recognizer.py` | `SpeedRecognizer` — EasyOCR speedometer readout (speed gate). |
 | `visualization.py` | HUD overlay drawing + `PreviewWindow` (main-thread only).      |
 | `dataset_writer.py`| `DatasetWriter` — background clip encoding + Excel catalog.    |
+| `compress_clips.py`| Re-encode existing clips to H.264 to reclaim disk space.        |
 | `main.py`          | Wires everything together; single-video entry point.           |
 | `pipeline.py`      | Batch runner: every video in a directory tree, sequentially.   |
 
@@ -34,7 +35,7 @@ Targets Python 3.10–3.12 (developed on 3.11). On a headless Linux VM:
 
 ```bash
 sudo apt update
-sudo apt install -y python3.11 python3.11-venv ffmpeg   # ffmpeg: yt-dlp + --transcode
+sudo apt install -y python3.11 python3.11-venv ffmpeg   # ffmpeg: clip encoding, yt-dlp, --transcode
 
 git clone <repo> && cd TurnDetection
 python3.11 -m venv .venv
@@ -130,6 +131,28 @@ python pipeline.py ./videos --output ./batch_output --no-preview \
 Farneback is used by default. Set `USE_LK_OPTICAL_FLOW = True` to use sparse
 Lucas-Kanade tracking of feature points inside the configured ROI. LK tuning
 options are also available in `config.py`.
+
+## Clip encoding and disk usage
+
+Clips are written as H.264 (`libx264`) through system `ffmpeg`, controlled by
+`CLIP_CRF` (default 23), `CLIP_PRESET` (default `veryfast`), and
+`CLIP_FFMPEG_THREADS` (default 2) in `config.py`. This is about 8–10× smaller
+than OpenCV's `mp4v` default: a 20 s 720p60 clip is typically ~16 MB instead of
+~140 MB. If `ffmpeg` with `libx264` is unavailable, the writer falls back to
+`mp4v` and prints a warning.
+
+Existing datasets can be re-encoded in place; file names are kept, so Excel
+catalog paths remain valid:
+
+```bash
+python compress_clips.py dataset_turns_3class --dry-run       # preview
+python compress_clips.py dataset_turns_3class                 # replace in place
+python compress_clips.py dataset_turns_3class --keep-original # write <name>.h264.mp4
+```
+
+`--min-bitrate` (default 20 Mbps) skips clips that are already H.264/HEVC at a
+reasonable bitrate, so it is safe to rerun. Raise `--crf` (e.g. 26–28) for
+smaller files at lower quality. `.transcode_cache/` source copies are ignored.
 
 ## Speed gate
 
