@@ -100,13 +100,15 @@ never collide. The combined catalog adds `Group`, `Source Video`, and
 `Video` columns. The batch summary reports **turns detected** (completed flow
 manoeuvres, before the speed/deflection gates) separately from **clips saved**.
 
-Useful flags: `--skip-existing` (resume a batch), `--dry-run` (list discovered
-videos and output folders), `--no-preview` (headless), `-q/--quiet`
-(silence per-turn/per-clip internal logs such as "Turn rejected: no speed…"
-and "Saved 20s Clip #…"; the bars and per-video result lines stay), and
-`--transcode` (convert sources OpenCV cannot decode — e.g. AV1 — to cached
-H.264 copies). Quiet mode can also be set globally with `VERBOSE = False` in
-`config.py`. The process exits non-zero if any video fails.
+Useful flags: `--skip-existing` (resume a batch; only videos with a completed
+per-video `.done` marker are skipped, so an interrupted video is retried even
+if it left a catalog behind), `--dry-run` (list discovered videos and output
+folders), `--no-preview` (headless), `-q/--quiet` (silence per-turn/per-clip
+internal logs such as "Turn rejected: no speed…" and "Saved 20s Clip #…"; the
+bars and per-video result lines stay), and `--transcode` (convert sources
+OpenCV cannot decode — e.g. AV1 — to cached H.264 copies). Quiet mode can also
+be set globally with `VERBOSE = False` in `config.py`. The process exits
+non-zero if any video fails.
 
 ### AV1 / undecodable sources
 

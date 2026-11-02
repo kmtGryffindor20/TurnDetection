@@ -559,33 +559,37 @@ def run_batch(
     )
     try:
         for job in bar:
-            marker = _read_done_marker(job)
-            already_done = (
-                job.done_marker.is_file() and marker.get("status") != "unreadable"
-            )
-            if skip_existing and (already_done or job.catalog_path.is_file()):
-                # Keep previously produced clips in the combined catalog.
-                records = None
-                if job.catalog_path.is_file():
-                    try:
-                        records = pd.read_excel(job.catalog_path)
-                    except Exception:
-                        records = None
-                turns_detected = marker.get("turns_detected")
-                if not isinstance(turns_detected, int):
-                    turns_detected = 0 if records is None else len(records)
-                results.append(
-                    JobResult(
-                        job, "skipped", records=records, turns_detected=turns_detected
+            if skip_existing:
+                marker = _read_done_marker(job)
+                # Only a `.done` marker means "finished": a catalog can exist
+                # from an interrupted run (main flushes Excel on Ctrl+C before
+                # the marker is written) and must not cause a skip.
+                if job.done_marker.is_file() and marker.get("status") != "unreadable":
+                    # Keep previously produced clips in the combined catalog.
+                    records = None
+                    if job.catalog_path.is_file():
+                        try:
+                            records = pd.read_excel(job.catalog_path)
+                        except Exception:
+                            records = None
+                    turns_detected = marker.get("turns_detected")
+                    if not isinstance(turns_detected, int):
+                        turns_detected = 0 if records is None else len(records)
+                    results.append(
+                        JobResult(
+                            job,
+                            "skipped",
+                            records=records,
+                            turns_detected=turns_detected,
+                        )
                     )
-                )
-                total_turns += turns_detected
-                total_clips += 0 if records is None else len(records)
-                bar.set_postfix(
-                    turns=total_turns, clips=total_clips, refresh=False
-                )
-                report_result(results[-1])
-                continue
+                    total_turns += turns_detected
+                    total_clips += 0 if records is None else len(records)
+                    bar.set_postfix(
+                        turns=total_turns, clips=total_clips, refresh=False
+                    )
+                    report_result(results[-1])
+                    continue
 
             prepared, prep_error = _prepare_source(job, transcode_cache, transcode)
             if prep_error is not None:
